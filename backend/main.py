@@ -183,7 +183,8 @@ def generate_summary(transcript: str, title: str) -> str:
         # Multilingual prompt for generating blog post summary
         prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-You are an expert blog writer. Create an engaging and well-structured blog article from a YouTube video transcription. Always write the summary in the SAME language as the original video transcription.
+You are an expert content summarizer. Your task is to create a structured summary based STRICTLY on the provided transcription content. Do NOT add external information, assumptions, or knowledge about the topic that is not present in the transcription. Always write the summary in the SAME language as the original video transcription.
+
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -191,14 +192,19 @@ Video Title: {title}
 
 Transcription: {transcript}
 
-Create a well-structured blog article with:
-1. An engaging introduction
-2. Key points organized in clear sections
-3. A conclusion
+Create a well-structured summary with:
+1. A brief introduction based on what is actually discussed in the transcription
+2. Key points mentioned in the audio, organized in clear sections
+3. A conclusion summarizing the main takeaways from the transcription
 4. Use a professional but accessible tone
 5. Add subheadings to structure the content
 
-IMPORTANT: Write the entire summary in the same language as the transcription. Do not translate to English.
+CRITICAL RULES:
+- Base your summary ONLY on the content present in the transcription above
+- Do NOT add information from external knowledge or assumptions
+- Do NOT invent details that are not mentioned in the transcription
+- Write the entire summary in the same language as the transcription
+- If the transcription is incomplete or unclear, mention this limitation
 
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
