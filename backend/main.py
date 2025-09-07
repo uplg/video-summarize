@@ -133,9 +133,15 @@ def extract_audio_from_youtube(url: str) -> tuple[str, str]:
         'outtmpl': audio_path,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'wav',
-            'preferredquality': '192',
+            'preferredcodec': 'mp3',
+            'preferredquality': '128',
+        }, {
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp3',
         }],
+        'postprocessor_args': [
+            '-af', 'atempo=1.25'  # Accelerate audio by 25%
+        ],
     }
     
     try:
@@ -147,7 +153,7 @@ def extract_audio_from_youtube(url: str) -> tuple[str, str]:
             
             audio_file = None
             for file in os.listdir(temp_dir):
-                if file.startswith("audio") and file.endswith(".wav"):
+                if file.startswith("audio") and file.endswith(".mp3"):
                     audio_file = os.path.join(temp_dir, file)
                     break
             
