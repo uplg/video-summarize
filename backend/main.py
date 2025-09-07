@@ -219,7 +219,7 @@ Transcription: {transcript}
             model=model,
             tokenizer=tokenizer,
             prompt=prompt,
-            max_tokens=1000,
+            max_tokens=8096,
         )
         
         generated_text = response.strip()
