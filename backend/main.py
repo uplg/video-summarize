@@ -123,7 +123,7 @@ async def startup_event():
         print("Queue worker started")
 
 def extract_audio_from_youtube(url: str) -> tuple[str, str]:
-    """Extraire l'audio d'une vidéo YouTube et retourner le chemin du fichier audio et le titre"""
+    """Extract audio from YouTube video and return path and title"""
     
     temp_dir = tempfile.mkdtemp()
     audio_path = os.path.join(temp_dir, "audio.%(ext)s")
@@ -182,7 +182,7 @@ You are an expert blog writer. Create an engaging and well-structured blog artic
 
 Video Title: {title}
 
-Transcription: {transcript[:4000]}
+Transcription: {transcript}
 
 Create a well-structured blog article with:
 1. An engaging introduction
