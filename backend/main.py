@@ -183,14 +183,12 @@ def generate_summary(transcript: str, title: str) -> str:
         # Multilingual prompt for generating blog post summary
         prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-You are an expert content summarizer. Your task is to create a structured summary based STRICTLY on the provided transcription content. Do NOT add external information, assumptions, or knowledge about the topic that is not present in the transcription. Always write the summary in the SAME language as the original video transcription.
+You are an expert content summarizer. Your task is to create a structured summary based STRICTLY on the provided transcription content. 
+Do NOT add external information, assumptions, or knowledge about the topic that is not present in the transcription.
 
+IMPORTANT: You MUST write your response in the EXACT SAME LANGUAGE as the transcription. DO NOT translate to English or any other language.
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
-
-Video Title: {title}
-
-Transcription: {transcript}
 
 Create a well-structured summary with:
 1. A brief introduction based on what is actually discussed in the transcription
@@ -203,8 +201,15 @@ CRITICAL RULES:
 - Base your summary ONLY on the content present in the transcription above
 - Do NOT add information from external knowledge or assumptions
 - Do NOT invent details that are not mentioned in the transcription
-- Write the entire summary in the same language as the transcription
+- MANDATORY: Write the entire summary in the EXACT SAME LANGUAGE as the transcription above
+- NEVER translate to English - keep the original language of the transcription
 - If the transcription is incomplete or unclear, mention this limitation
+
+REMINDER: Your response must be in the same language as the transcription. Do not use English if the transcription is in another language.
+
+Video Title: {title}
+
+Transcription: {transcript}
 
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
