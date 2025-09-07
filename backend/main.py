@@ -174,21 +174,145 @@ def transcribe_audio(audio_path: str) -> str:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during transcription: {str(e)}")
 
+def chunk_transcript(transcript: str, max_chunk_size: int = 3000) -> list[str]:
+    """Split transcript into manageable chunks for processing"""
+    words = transcript.split()
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    
+    for word in words:
+        word_length = len(word) + 1  # +1 for space
+        if current_length + word_length > max_chunk_size and current_chunk:
+            chunks.append(' '.join(current_chunk))
+            current_chunk = [word]
+            current_length = word_length
+        else:
+            current_chunk.append(word)
+            current_length += word_length
+    
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+    
+    return chunks
+
+def generate_chunk_summary(chunk: str, title: str, chunk_index: int, total_chunks: int) -> str:
+    """Generate summary for a single chunk"""
+    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+You are an expert content summarizer. You must respond in the same language as the transcription. Do not translate to English unless the transcription is in English.
+
+Your task is to summarize this part ({chunk_index + 1}/{total_chunks}) of a video transcription. Focus on the key points and main ideas discussed in this segment.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Summarize the key points from this segment in a clear and concise manner. Focus on the main ideas and important details mentioned.
+
+Video Title: {title}
+Segment {chunk_index + 1} of {total_chunks}:
+
+{chunk}
+
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+    
+    response = generate(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=prompt,
+        max_tokens=1024,
+    )
+    
+    generated_text = response.strip()
+    if "<|start_header_id|>assistant<|end_header_id|>" in generated_text:
+        return generated_text.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+    return generated_text
+
+def generate_final_summary(chunk_summaries: list[str], title: str) -> str:
+    """Generate final comprehensive summary from chunk summaries"""
+    combined_summaries = "\n\n".join([f"Segment {i+1}: {summary}" for i, summary in enumerate(chunk_summaries)])
+    
+    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+You are an expert content summarizer. You must respond in the same language as the transcription. Do not translate to English unless the transcription is in English.
+
+Your task is to create a comprehensive, well-structured summary by combining the summaries of different segments from a video.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Create a comprehensive, well-structured summary with:
+1. A brief introduction
+2. Main topics and key points organized in clear sections
+3. A conclusion with the main takeaways
+4. Use subheadings to structure the content
+5. Maintain a professional but accessible tone
+
+Combine all the information from the segments into a cohesive narrative that captures the complete content of the video.
+
+Video Title: {title}
+
+Segment Summaries:
+{combined_summaries}
+
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+    
+    response = generate(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=prompt,
+        max_tokens=4096,
+    )
+    
+    generated_text = response.strip()
+    if "<|start_header_id|>assistant<|end_header_id|>" in generated_text:
+        return generated_text.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+    return generated_text
+
 def generate_summary(transcript: str, title: str) -> str:
-    """Generate a blog post summary from transcript using MLX-LM"""
+    """Generate a comprehensive summary from transcript using chunking strategy"""
     if model is None or tokenizer is None:
         raise HTTPException(status_code=500, detail="Generation model not available")
     
     try:
-        # Multilingual prompt for generating blog post summary
-        prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        # Detect language from transcript
+        transcript_sample = transcript[:200].lower()
+        
+        # Check if transcript is too long for single processing
+        if len(transcript) > 4000:  # Use chunking for long transcripts
+            print(f"Long transcript detected ({len(transcript)} chars), using chunking strategy...")
+            
+            # Split transcript into chunks
+            chunks = chunk_transcript(transcript, max_chunk_size=3000)
+            print(f"Split into {len(chunks)} chunks")
+            
+            # Generate summary for each chunk
+            chunk_summaries = []
+            for i, chunk in enumerate(chunks):
+                print(f"Processing chunk {i+1}/{len(chunks)}...")
+                chunk_summary = generate_chunk_summary(chunk, title, i, len(chunks))
+                chunk_summaries.append(chunk_summary)
+            
+            # Generate final comprehensive summary
+            print("Generating final comprehensive summary...")
+            summary = generate_final_summary(chunk_summaries, title)
+            
+        else:
+            # Use original single-pass approach for shorter transcripts
+            print("Short transcript, using single-pass approach...")
+            prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-You are an expert content summarizer. Your task is to create a structured summary based STRICTLY on the provided transcription content. 
-Do NOT add external information, assumptions, or knowledge about the topic that is not present in the transcription.
+You are an expert content summarizer. "You must respond in the same language as the transcription. Do not translate to English unless the transcription is in English."
 
-IMPORTANT: You MUST write your response in the EXACT SAME LANGUAGE as the transcription. DO NOT translate to English or any other language.
+Your task is to create a structured summary based STRICTLY on the provided transcription content. Do NOT add external information, assumptions, or knowledge about the topic that is not present in the transcription.
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Video Title: {title}
+
+Transcription: {transcript}
 
 Create a well-structured summary with:
 1. A brief introduction based on what is actually discussed in the transcription
@@ -201,32 +325,25 @@ CRITICAL RULES:
 - Base your summary ONLY on the content present in the transcription above
 - Do NOT add information from external knowledge or assumptions
 - Do NOT invent details that are not mentioned in the transcription
-- MANDATORY: Write the entire summary in the EXACT SAME LANGUAGE as the transcription above
-- NEVER translate to English - keep the original language of the transcription
+- Write in the EXACT SAME LANGUAGE as the transcription
 - If the transcription is incomplete or unclear, mention this limitation
-
-REMINDER: Your response must be in the same language as the transcription. Do not use English if the transcription is in another language.
-
-Video Title: {title}
-
-Transcription: {transcript}
 
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 """
-        
-        response = generate(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=prompt,
-            max_tokens=8096,
-        )
-        
-        generated_text = response.strip()
-        if "<|start_header_id|>assistant<|end_header_id|>" in generated_text:
-            summary = generated_text.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
-        else:
-            summary = generated_text
+            
+            response = generate(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                max_tokens=4096,
+            )
+            
+            generated_text = response.strip()
+            if "<|start_header_id|>assistant<|end_header_id|>" in generated_text:
+                summary = generated_text.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+            else:
+                summary = generated_text
             
         return summary
         
