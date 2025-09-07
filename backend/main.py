@@ -10,6 +10,10 @@ import mlx_lm
 from mlx_lm import load, generate
 import asyncio
 from asyncio import Queue
+import uuid
+from datetime import datetime
+from enum import Enum
+from typing import Optional, Dict
 
 # Fix tokenizers parallelism warning
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -24,8 +28,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    EXTRACTING_AUDIO = "extracting_audio"
+    TRANSCRIBING = "transcribing"
+    GENERATING_SUMMARY = "generating_summary"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
 class VideoRequest(BaseModel):
     url: str
+
+class TaskResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    message: str
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    progress: int  # 0-100
+    message: str
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
 class SummaryResponse(BaseModel):
     title: str
@@ -36,7 +63,8 @@ MODEL_NAME = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 model = None
 tokenizer = None
 
-# Queue for processing requests one at a time
+# Task storage and queue system
+tasks: Dict[str, TaskStatusResponse] = {}
 processing_queue = Queue(maxsize=10)
 queue_worker_started = False
 
@@ -49,14 +77,18 @@ async def queue_worker():
             if request_data is None:  # Shutdown signal
                 break
             
-            request, future = request_data
+            task_id, request = request_data
             
             try:
-                # Process the request
-                result = await process_summarization_request(request)
-                future.set_result(result)
+                # Process the request with task tracking
+                await process_summarization_request_with_tracking(task_id, request)
             except Exception as e:
-                future.set_exception(e)
+                # Update task status to failed
+                if task_id in tasks:
+                    tasks[task_id].status = TaskStatus.FAILED
+                    tasks[task_id].error = str(e)
+                    tasks[task_id].updated_at = datetime.now()
+                print(f"Error processing task {task_id}: {e}")
             finally:
                 processing_queue.task_done()
                 
@@ -183,17 +215,38 @@ IMPORTANT: Write the entire summary in the same language as the transcription. D
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during summary generation: {str(e)}")
 
-async def process_summarization_request(request: VideoRequest) -> SummaryResponse:
-    """Process a single summarization request"""
+async def process_summarization_request_with_tracking(task_id: str, request: VideoRequest):
+    """Process a single summarization request with progress tracking"""
     try:
+        # Update task status: extracting audio
+        tasks[task_id].status = TaskStatus.EXTRACTING_AUDIO
+        tasks[task_id].progress = 10
+        tasks[task_id].message = "Extracting audio from YouTube video..."
+        tasks[task_id].updated_at = datetime.now()
+        
         print(f"Extracting audio from: {request.url}")
-        audio_path, title = extract_audio_from_youtube(request.url)
+        # Run in thread to avoid blocking the event loop
+        audio_path, title = await asyncio.to_thread(extract_audio_from_youtube, request.url)
+        
+        # Update task status: transcribing
+        tasks[task_id].status = TaskStatus.TRANSCRIBING
+        tasks[task_id].progress = 40
+        tasks[task_id].message = "Transcribing audio to text..."
+        tasks[task_id].updated_at = datetime.now()
         
         print("Transcribing audio...")
-        transcript = transcribe_audio(audio_path)
+        # Run in thread to avoid blocking the event loop
+        transcript = await asyncio.to_thread(transcribe_audio, audio_path)
+        
+        # Update task status: generating summary
+        tasks[task_id].status = TaskStatus.GENERATING_SUMMARY
+        tasks[task_id].progress = 70
+        tasks[task_id].message = "Generating blog post summary..."
+        tasks[task_id].updated_at = datetime.now()
         
         print("Generating summary...")
-        summary = generate_summary(transcript, title)
+        # Run in thread to avoid blocking the event loop
+        summary = await asyncio.to_thread(generate_summary, transcript, title)
         
         # Clean up temporary files
         try:
@@ -202,39 +255,89 @@ async def process_summarization_request(request: VideoRequest) -> SummaryRespons
         except:
             pass
         
-        return SummaryResponse(
-            title=title,
-            summary=summary,
-            transcript=transcript
-        )
+        # Update task status: completed
+        tasks[task_id].status = TaskStatus.COMPLETED
+        tasks[task_id].progress = 100
+        tasks[task_id].message = "Summary generated successfully!"
+        tasks[task_id].result = {
+            "title": title,
+            "summary": summary,
+            "transcript": transcript
+        }
+        tasks[task_id].updated_at = datetime.now()
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        # Update task status: failed
+        tasks[task_id].status = TaskStatus.FAILED
+        tasks[task_id].error = str(e)
+        tasks[task_id].message = f"Error: {str(e)}"
+        tasks[task_id].updated_at = datetime.now()
+        raise
 
-@app.post("/summarize", response_model=SummaryResponse)
+@app.post("/summarize", response_model=TaskResponse)
 async def summarize_video(request: VideoRequest):
-    """Main endpoint to summarize a YouTube video using queue system"""
+    """Start a new summarization task and return task ID for tracking"""
     
     # Check if queue is full
     if processing_queue.full():
         raise HTTPException(status_code=429, detail="Server is busy. Please try again later.")
     
-    # Create a future to get the result
-    future = asyncio.Future()
+    # Generate unique task ID
+    task_id = str(uuid.uuid4())
+    
+    # Create task entry
+    now = datetime.now()
+    tasks[task_id] = TaskStatusResponse(
+        task_id=task_id,
+        status=TaskStatus.PENDING,
+        progress=0,
+        message="Task queued for processing...",
+        created_at=now,
+        updated_at=now
+    )
     
     # Add request to queue
     try:
-        await processing_queue.put((request, future))
-        print(f"Request queued for: {request.url}")
+        await processing_queue.put((task_id, request))
+        print(f"Task {task_id} queued for: {request.url}")
         
-        # Wait for the result
-        result = await future
-        return result
+        return TaskResponse(
+            task_id=task_id,
+            status=TaskStatus.PENDING,
+            message="Task created successfully. Use the task_id to check progress."
+        )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+        # Remove task from storage if queueing failed
+        if task_id in tasks:
+            del tasks[task_id]
+        raise HTTPException(status_code=500, detail=f"Error creating task: {str(e)}")
+
+@app.get("/task/{task_id}", response_model=TaskStatusResponse)
+async def get_task_status(task_id: str):
+    """Get the status and progress of a specific task"""
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    return tasks[task_id]
+
+@app.get("/tasks")
+async def get_all_tasks():
+    """Get all tasks (for debugging purposes)"""
+    return {"tasks": list(tasks.values())}
+
+@app.delete("/task/{task_id}")
+async def delete_task(task_id: str):
+    """Delete a completed or failed task"""
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    task = tasks[task_id]
+    if task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+        raise HTTPException(status_code=400, detail="Cannot delete a task that is still processing")
+    
+    del tasks[task_id]
+    return {"message": "Task deleted successfully"}
 
 @app.get("/")
 async def root():
