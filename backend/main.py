@@ -129,7 +129,7 @@ def extract_audio_from_youtube(url: str) -> tuple[str, str]:
     audio_path = os.path.join(temp_dir, "audio.%(ext)s")
     
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio/best[format_note*=original]',
         'outtmpl': audio_path,
         'noplaylist': True,  # Only download single video, not entire playlist
         'postprocessors': [{
@@ -196,22 +196,31 @@ def chunk_transcript(transcript: str, max_chunk_size: int = 3000) -> list[str]:
     
     return chunks
 
-def generate_chunk_summary(chunk: str, title: str, chunk_index: int, total_chunks: int) -> str:
+def generate_chunk_summary(chunk: str, title: str, chunk_index: int, total_chunks: int, language_instruction: str) -> str:
     """Generate summary for a single chunk"""
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-You are an expert content summarizer. You must respond in the same language as the transcription. Do not translate to English unless the transcription is in English.
+{language_instruction}
 
-Your task is to summarize this part ({chunk_index + 1}/{total_chunks}) of a video transcription. Focus on the key points and main ideas discussed in this segment.
+You are an expert content summarizer. Your task is to summarize this part ({chunk_index + 1}/{total_chunks}) of a video transcription.
+
+IMPORTANT: Look at the language of the text below and respond in that EXACT same language. Do not translate.
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
-
-Summarize the key points from this segment in a clear and concise manner. Focus on the main ideas and important details mentioned.
 
 Video Title: {title}
 Segment {chunk_index + 1} of {total_chunks}:
 
 {chunk}
+
+Summarize the key points from this segment in a clear and concise manner. Focus on the main ideas and important details mentioned.
+
+CRITICAL RULES:
+- RESPOND IN THE SAME LANGUAGE AS THE TEXT ABOVE
+- Base your summary ONLY on the content present in the segment chunk
+- Do NOT add information from external knowledge or assumptions
+- Do NOT invent details that are not mentioned in the segment chunk
+- If the segment chunk is incomplete or unclear, mention this limitation
 
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
@@ -229,15 +238,17 @@ Segment {chunk_index + 1} of {total_chunks}:
         return generated_text.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
     return generated_text
 
-def generate_final_summary(chunk_summaries: list[str], title: str) -> str:
+def generate_final_summary(chunk_summaries: list[str], title: str, language_instruction: str) -> str:
     """Generate final comprehensive summary from chunk summaries"""
     combined_summaries = "\n\n".join([f"Segment {i+1}: {summary}" for i, summary in enumerate(chunk_summaries)])
     
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-You are an expert content summarizer. You must respond in the same language as the transcription. Do not translate to English unless the transcription is in English.
+{language_instruction}
 
-Your task is to create a comprehensive, well-structured summary by combining the summaries of different segments from a video.
+You are an expert content summarizer. Your task is to create a comprehensive, well-structured summary by combining the summaries of different segments from a video.
+
+IMPORTANT: Look at the language of the segment summaries below and respond in that EXACT same language. Do not translate.
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -248,7 +259,14 @@ Create a comprehensive, well-structured summary with:
 4. Use subheadings to structure the content
 5. Maintain a professional but accessible tone
 
-Combine all the information from the segments into a cohesive narrative that captures the complete content of the video.
+CRITICAL RULES:
+- RESPOND IN THE SAME LANGUAGE AS THE SEGMENT SUMMARIES ABOVE
+- Base your summary ONLY on the content present in the segment summaries below
+- Do NOT add information from external knowledge or assumptions
+- Do NOT invent details that are not mentioned in the segment summaries
+- If the segment summaries are incomplete or unclear, mention this limitation
+- Combine all the information from the segments into a cohesive narrative that captures the complete content of the video
+- Do NOT translate or change the language
 
 Video Title: {title}
 
@@ -277,8 +295,11 @@ def generate_summary(transcript: str, title: str) -> str:
         raise HTTPException(status_code=500, detail="Generation model not available")
     
     try:
-        # Detect language from transcript
-        transcript_sample = transcript[:200].lower()
+        # Detect language from transcript sample
+        transcript_sample = transcript[:500].lower()
+        
+        # Create language instruction based on detection
+        language_instruction = f"CRITICAL: You MUST respond in the language of the transcript. Analyze the language of the transcript and respond in the EXACT SAME LANGUAGE. Do NOT translate to English or any other language unless the transcript is already in that language."
         
         # Check if transcript is too long for single processing
         if len(transcript) > 4000:  # Use chunking for long transcripts
@@ -292,27 +313,23 @@ def generate_summary(transcript: str, title: str) -> str:
             chunk_summaries = []
             for i, chunk in enumerate(chunks):
                 print(f"Processing chunk {i+1}/{len(chunks)}...")
-                chunk_summary = generate_chunk_summary(chunk, title, i, len(chunks))
+                chunk_summary = generate_chunk_summary(chunk, title, i, len(chunks), language_instruction)
                 chunk_summaries.append(chunk_summary)
             
             # Generate final comprehensive summary
             print("Generating final comprehensive summary...")
-            summary = generate_final_summary(chunk_summaries, title)
+            summary = generate_final_summary(chunk_summaries, title, language_instruction)
             
         else:
             # Use original single-pass approach for shorter transcripts
             print("Short transcript, using single-pass approach...")
             prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-You are an expert content summarizer. "You must respond in the same language as the transcription. Do not translate to English unless the transcription is in English."
+{language_instruction}
 
-Your task is to create a structured summary based STRICTLY on the provided transcription content. Do NOT add external information, assumptions, or knowledge about the topic that is not present in the transcription.
+You are an expert content summarizer. Your task is to create a structured summary based STRICTLY on the provided transcription content. Do NOT add external information, assumptions, or knowledge about the topic that is not present in the transcription.
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
-
-Video Title: {title}
-
-Transcription: {transcript}
 
 Create a well-structured summary with:
 1. A brief introduction based on what is actually discussed in the transcription
@@ -322,11 +339,15 @@ Create a well-structured summary with:
 5. Add subheadings to structure the content
 
 CRITICAL RULES:
-- Base your summary ONLY on the content present in the transcription above
+- Base your summary ONLY on the content present in the transcription below
 - Do NOT add information from external knowledge or assumptions
 - Do NOT invent details that are not mentioned in the transcription
 - Write in the EXACT SAME LANGUAGE as the transcription
 - If the transcription is incomplete or unclear, mention this limitation
+
+Video Title: {title}
+
+Transcription: {transcript}
 
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
@@ -376,7 +397,7 @@ async def process_summarization_request_with_tracking(task_id: str, request: Vid
         # Update task status: generating summary
         tasks[task_id].status = TaskStatus.GENERATING_SUMMARY
         tasks[task_id].progress = 70
-        tasks[task_id].message = "Generating blog post summary..."
+        tasks[task_id].message = "Generating summary..."
         tasks[task_id].updated_at = datetime.now()
         
         print("Generating summary...")
