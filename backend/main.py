@@ -131,6 +131,7 @@ def extract_audio_from_youtube(url: str) -> tuple[str, str]:
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': audio_path,
+        'noplaylist': True,  # Only download single video, not entire playlist
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
