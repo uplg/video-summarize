@@ -6,7 +6,7 @@ The application uses React for the frontend, FastAPI for the backend, MLX Whispe
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.11+
 - Node.js 22+
 - macOS with MLX support (for AI)
 
@@ -50,5 +50,5 @@ The application uses React for the frontend, FastAPI for the backend, MLX Whispe
 
 - **Frontend**: React + TypeScript + Vite + shadcn/ui
 - **Backend**: FastAPI + Python
-- **AI**: MLX Whisper (transcription) + MLX-LM (summaries) with gemma-3-4b-it-4bit-DWQ
+- **AI**: MLX Whisper (transcription) + MLX-LM (summaries)
 - **Video extraction**: yt-dlp

@@ -59,7 +59,7 @@ class SummaryResponse(BaseModel):
     summary: str
     transcript: str
 
-MODEL_NAME = "mlx-community/Llama-3.2-3B-Instruct-4bit"
+MODEL_NAME = "mlx-community/gemma-3-4b-it-4bit-DWQ"
 model = None
 tokenizer = None
 
@@ -198,95 +198,88 @@ def chunk_transcript(transcript: str, max_chunk_size: int = 3000) -> list[str]:
 
 def generate_chunk_summary(chunk: str, title: str, chunk_index: int, total_chunks: int, language_instruction: str) -> str:
     """Generate summary for a single chunk"""
-    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
+    prompt = f"""<bos><start_of_turn>user
 {language_instruction}
 
 You are an expert content summarizer. Your task is to summarize this part ({chunk_index + 1}/{total_chunks}) of a video transcription.
 
 IMPORTANT: Look at the language of the text below and respond in that EXACT same language. Do not translate.
 
-<|eot_id|><|start_header_id|>user<|end_header_id|>
-
 Video Title: {title}
 Segment {chunk_index + 1} of {total_chunks}:
 
 {chunk}
 
-Summarize the key points from this segment in a clear and concise manner. Focus on the main ideas and important details mentioned.
+Summarize the key points from this segment in a detailed and comprehensive manner. Focus on the main ideas, important details, and context mentioned. Provide a thorough summary that captures the essence of this segment.
 
 CRITICAL RULES:
 - RESPOND IN THE SAME LANGUAGE AS THE TEXT ABOVE
+- Provide a detailed summary (at least 3-4 sentences)
 - Base your summary ONLY on the content present in the segment chunk
 - Do NOT add information from external knowledge or assumptions
 - Do NOT invent details that are not mentioned in the segment chunk
 - If the segment chunk is incomplete or unclear, mention this limitation
-
-<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-
+<end_of_turn>
+<start_of_turn>model
 """
     
     response = generate(
         model=model,
         tokenizer=tokenizer,
         prompt=prompt,
-        max_tokens=1024,
+        max_tokens=2048
     )
     
     generated_text = response.strip()
-    if "<|start_header_id|>assistant<|end_header_id|>" in generated_text:
-        return generated_text.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+    # Clean up Gemma-specific tokens
+    generated_text = generated_text.replace("<end_of_turn>", "").replace("<start_of_turn>model", "").strip()
     return generated_text
 
 def generate_final_summary(chunk_summaries: list[str], title: str, language_instruction: str) -> str:
     """Generate final comprehensive summary from chunk summaries"""
     combined_summaries = "\n\n".join([f"Segment {i+1}: {summary}" for i, summary in enumerate(chunk_summaries)])
     
-    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
+    prompt = f"""<bos><start_of_turn>user
 {language_instruction}
 
-You are an expert content summarizer. Your task is to create a comprehensive, well-structured summary by combining the summaries of different segments from a video.
+You are an expert content summarizer. Create a comprehensive summary by combining the summaries of different segments from a video.
 
 IMPORTANT: Look at the language of the segment summaries below and respond in that EXACT same language. Do not translate.
 
-<|eot_id|><|start_header_id|>user<|end_header_id|>
+FORMAT REQUIREMENTS:
+- Start IMMEDIATELY with the main content using markdown headings
+- Use ## for main sections, ### for subsections
+- Write in a blog post style that is engaging and informative
+- End with a conclusion section
 
-Create a comprehensive, well-structured summary with:
-1. A brief introduction
-2. Main topics and key points organized in clear sections
-3. A conclusion with the main takeaways
-4. Use subheadings to structure the content
-5. Maintain a professional but accessible tone
+STRICT PROHIBITIONS:
+- NEVER start with "Voici un résumé" or "Here is a summary" or any meta-commentary
+- NEVER write "combinant les informations" or "combining information"
+- NEVER mention that this is a summary or describe what you're doing
+- NO introductory sentences explaining the task
 
-CRITICAL RULES:
-- RESPOND IN THE SAME LANGUAGE AS THE SEGMENT SUMMARIES ABOVE
-- Base your summary ONLY on the content present in the segment summaries below
-- Do NOT add information from external knowledge or assumptions
-- Do NOT invent details that are not mentioned in the segment summaries
-- If the segment summaries are incomplete or unclear, mention this limitation
-- Combine all the information from the segments into a cohesive narrative that captures the complete content of the video
-- Do NOT translate or change the language
+EXAMPLE START (if video was about cooking):
+## Les techniques de base
+La vidéo présente plusieurs méthodes...
 
 Video Title: {title}
 
 Segment Summaries:
 {combined_summaries}
-
-<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-
+<end_of_turn>
+<start_of_turn>model
 """
     
     response = generate(
         model=model,
         tokenizer=tokenizer,
         prompt=prompt,
-        max_tokens=4096,
+        max_tokens=6144,
     )
     
     generated_text = response.strip()
-    if "<|start_header_id|>assistant<|end_header_id|>" in generated_text:
-        return generated_text.split("<|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+    # Clean up Gemma-specific tokens
+    generated_text = generated_text.replace("<end_of_turn>", "").replace("<start_of_turn>model", "").strip()
     return generated_text
 
 def generate_summary(transcript: str, title: str) -> str:
