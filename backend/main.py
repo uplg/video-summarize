@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import yt_dlp
 import os
 import tempfile
-from pathlib import Path
 import mlx_whisper
 import mlx_lm
 from mlx_lm import load, generate
@@ -68,6 +68,8 @@ tasks: Dict[str, TaskStatusResponse] = {}
 processing_queue = Queue(maxsize=10)
 queue_worker_started = False
 
+
+
 async def queue_worker():
     """Worker to process summarization requests one at a time"""
     while True:
@@ -129,42 +131,85 @@ def extract_audio_from_youtube(url: str) -> tuple[str, str]:
     audio_path = os.path.join(temp_dir, "audio.%(ext)s")
     
     ydl_opts = {
-        'format': 'bestaudio/best[format_note*=original]',
+        # Utiliser plusieurs formats de fallback pour éviter les erreurs YouTube
+        'format': 'bestaudio/best[format_note*=original]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[height<=720]/best',
         'outtmpl': audio_path,
         'noplaylist': True,  # Only download single video, not entire playlist
+        'ignoreerrors': False,
+        'no_warnings': False,
+        # Options pour contourner les restrictions YouTube récentes
+        'extractor_args': {
+            'youtube': {
+                'skip': ['hls', 'dash'],  # Éviter les formats problématiques
+                'player_client': ['android', 'web'],  # Utiliser plusieurs clients
+            }
+        },
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '128',
-        }, {
-            'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp3',
         }],
         'postprocessor_args': [
             '-af', 'atempo=1.25'  # Accelerate audio by 25%
         ],
+        # Headers pour éviter la détection de bot
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
     }
     
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Titre non disponible')
-            
-            ydl.download([url])
-            
-            audio_file = None
-            for file in os.listdir(temp_dir):
-                if file.startswith("audio") and file.endswith(".mp3"):
-                    audio_file = os.path.join(temp_dir, file)
-                    break
-            
-            if not audio_file or not os.path.exists(audio_file):
-                raise Exception("Audio file not found after extraction")
+    # Essayer plusieurs configurations en cas d'échec
+    fallback_configs = [
+        # Configuration principale (déjà définie)
+        ydl_opts,
+        # Configuration fallback 1: format plus simple
+        {
+            **ydl_opts,
+            'format': 'worst[ext=mp4]/worst',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            }
+        },
+        # Configuration fallback 2: sans restrictions
+        {
+            **ydl_opts,
+            'format': 'bestaudio/best',
+            'extractor_args': {}
+        }
+    ]
+    
+    last_error = None
+    
+    for i, config in enumerate(fallback_configs):
+        try:
+            print(f"Tentative {i+1}/3 d'extraction audio...")
+            with yt_dlp.YoutubeDL(config) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', 'Titre non disponible')
                 
-            return audio_file, title
-            
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error during audio extraction: {str(e)}")
+                ydl.download([url])
+                
+                audio_file = None
+                for file in os.listdir(temp_dir):
+                    if file.startswith("audio") and file.endswith(".mp3"):
+                        audio_file = os.path.join(temp_dir, file)
+                        break
+                
+                if not audio_file or not os.path.exists(audio_file):
+                    raise Exception("Fichier audio non trouvé après extraction")
+                
+                print(f"✅ Extraction réussie avec la configuration {i+1}")
+                return audio_file, title
+                
+        except Exception as e:
+            last_error = e
+            print(f"❌ Échec de la tentative {i+1}: {str(e)}")
+            continue
+    
+    # Si toutes les tentatives échouent
+    raise HTTPException(status_code=400, detail=f"Impossible d'extraire l'audio après 3 tentatives. Dernière erreur: {str(last_error)}")
 
 def transcribe_audio(audio_path: str) -> str:
     """Transcribe audio file to text using MLX Whisper"""
@@ -498,6 +543,24 @@ async def health_check():
         "status": "healthy",
         "model_loaded": model is not None and tokenizer is not None
     }
+
+@app.get("/extract-audio")
+async def extract_audio_url(url: str):
+    """Extract audio from YouTube video and return MP3 file directly"""
+    try:
+        # Extract audio and get file path
+        audio_path, title = await asyncio.to_thread(extract_audio_from_youtube, url)
+        
+        # Return the MP3 file directly
+        return FileResponse(
+            path=audio_path,
+            media_type="audio/mpeg",
+            filename=f"{title}.mp3",
+            headers={"Content-Disposition": f"attachment; filename=\"{title}.mp3\""}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error extracting audio: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
