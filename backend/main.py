@@ -59,6 +59,7 @@ class SummaryResponse(BaseModel):
     summary: str
     transcript: str
 
+# TODO: maybe use gemma 3n instead
 MODEL_NAME = "mlx-community/gemma-3-4b-it-4bit-DWQ"
 model = None
 tokenizer = None
